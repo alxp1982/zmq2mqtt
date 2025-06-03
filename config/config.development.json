@@ -3,6 +3,7 @@
     "BackendPort":5559,
     "MqttServer":"tcp://localhost:1883",
     "MqttClientId":"assets_tracker",
+    "WebPort": 8080,
 
     "MqttConfig": {
       "KeepAliveTimeout": 5,

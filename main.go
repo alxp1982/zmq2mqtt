@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"net/http"
 	"os"
 	"path"
 	"path/filepath"
@@ -164,6 +165,18 @@ func main() {
 
 	go forwarder_thread(sugar, &configuration, cancel)
 	defer func() { cancel <- true }()
+
+	// Start web server in a goroutine
+	go func() {
+		http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "text/html")
+			w.Write([]byte("<html><body><h1>ZMQ2MQTT Dashboard coming soon!</h1></body></html>"))
+		})
+		err := http.ListenAndServe(fmt.Sprintf(":%d", configuration.WebPort), nil)
+		if err != nil {
+			sugar.Errorln("Web server error:", err)
+		}
+	}()
 
 	//Setup proxy
 	subscriber, _ := zmq.NewSocket(zmq.XSUB)

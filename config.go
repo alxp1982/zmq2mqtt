@@ -22,4 +22,5 @@ type Configuration struct {
 	MqttClientId  string
 	ForwardTopics []string //ZMQ topics to forward to MQTT
 	LoggerConfig  zap.Config
+	WebPort       int // Web server port
 }

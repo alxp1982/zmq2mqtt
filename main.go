@@ -1,7 +1,6 @@
 package main
 
 import (
-	"encoding/json"
 	"fmt"
 	"net/http"
 	"os"
@@ -9,16 +8,51 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
-	"text/template"
 	"time"
 
 	"go.uber.org/zap"
 
 	mqtt "github.com/eclipse/paho.mqtt.golang"
+	"github.com/gorilla/websocket"
 	zmq "github.com/pebbe/zmq4"
 	"github.com/tkanos/gonfig"
 	"golang.org/x/exp/slices"
 )
+
+var upgrader = websocket.Upgrader{
+	CheckOrigin: func(r *http.Request) bool {
+		return true // Allow all origins for now
+	},
+}
+
+var clients = make(map[*websocket.Conn]bool)
+var broadcast = make(chan map[string]interface{})
+
+func handleWebSocket(w http.ResponseWriter, r *http.Request) {
+	conn, err := upgrader.Upgrade(w, r, nil)
+	if err != nil {
+		return
+	}
+	defer conn.Close()
+
+	clients[conn] = true
+	defer delete(clients, conn)
+
+	for {
+		_, _, err := conn.ReadMessage()
+		if err != nil {
+			break
+		}
+	}
+}
+
+func broadcastStats(stats *Stats) {
+	for {
+		time.Sleep(1 * time.Second)
+		statsData := stats.GetStats()
+		broadcast <- statsData
+	}
+}
 
 func forwarder_thread(logger *zap.SugaredLogger, config *Configuration, stats *Stats, cancel chan bool) {
 	logger.Debugln("enter forward_thread")
@@ -178,14 +212,29 @@ func main() {
 
 	// Start web server in a goroutine
 	go func() {
-		http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-			tmpl := template.Must(template.ParseFiles("templates/dashboard.html"))
-			tmpl.Execute(w, nil)
-		})
+		http.HandleFunc("/", handleDashboard)
 		http.HandleFunc("/stats", func(w http.ResponseWriter, r *http.Request) {
-			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(stats.GetStats())
+			handleStats(w, r, stats)
 		})
+		http.HandleFunc("/ws", handleWebSocket)
+
+		// Start broadcasting stats
+		go broadcastStats(stats)
+
+		// Handle broadcasting to clients
+		go func() {
+			for {
+				statsData := <-broadcast
+				for client := range clients {
+					err := client.WriteJSON(statsData)
+					if err != nil {
+						client.Close()
+						delete(clients, client)
+					}
+				}
+			}
+		}()
+
 		err := http.ListenAndServe(fmt.Sprintf(":%d", configuration.WebPort), nil)
 		if err != nil {
 			sugar.Errorln("Web server error:", err)

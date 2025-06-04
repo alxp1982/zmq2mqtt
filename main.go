@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"os"
@@ -8,6 +9,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"text/template"
 	"time"
 
 	"go.uber.org/zap"
@@ -18,7 +20,7 @@ import (
 	"golang.org/x/exp/slices"
 )
 
-func forwarder_thread(logger *zap.SugaredLogger, config *Configuration, cancel chan bool) {
+func forwarder_thread(logger *zap.SugaredLogger, config *Configuration, stats *Stats, cancel chan bool) {
 	logger.Debugln("enter forward_thread")
 	defer logger.Debugln("exit forward_thread")
 
@@ -37,7 +39,10 @@ func forwarder_thread(logger *zap.SugaredLogger, config *Configuration, cancel c
 		switch sockets, err := poller.Poll(100 * time.Millisecond); {
 		case err != nil:
 			logger.Errorln(err)
+			stats.UpdateConnectionStatus(true, false)
 		case len(sockets) > 0:
+			stats.UpdateConnectionStatus(true, client.IsConnected())
+
 			if !client.IsConnected() {
 				logger.Warnln("MQTT not connected. Skipping message")
 				continue
@@ -53,6 +58,7 @@ func forwarder_thread(logger *zap.SugaredLogger, config *Configuration, cancel c
 					}
 
 					logger.Debugf("Received messages %d", len(msgs))
+					stats.IncrementMessages(true, false)
 
 					for _, msg := range msgs {
 						topic := strings.Split(msg, " ")[0]
@@ -68,6 +74,8 @@ func forwarder_thread(logger *zap.SugaredLogger, config *Configuration, cancel c
 
 								if token.Error() != nil {
 									logger.Warnln(token.Error().Error())
+								} else {
+									stats.IncrementMessages(false, true)
 								}
 							}
 						}
@@ -163,14 +171,20 @@ func main() {
 
 	cancel := make(chan bool)
 
-	go forwarder_thread(sugar, &configuration, cancel)
+	stats := NewStats(100) // 100 message window for rate calculation
+
+	go forwarder_thread(sugar, &configuration, stats, cancel)
 	defer func() { cancel <- true }()
 
 	// Start web server in a goroutine
 	go func() {
 		http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-			w.Header().Set("Content-Type", "text/html")
-			w.Write([]byte("<html><body><h1>ZMQ2MQTT Dashboard coming soon!</h1></body></html>"))
+			tmpl := template.Must(template.ParseFiles("templates/dashboard.html"))
+			tmpl.Execute(w, nil)
+		})
+		http.HandleFunc("/stats", func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(stats.GetStats())
 		})
 		err := http.ListenAndServe(fmt.Sprintf(":%d", configuration.WebPort), nil)
 		if err != nil {

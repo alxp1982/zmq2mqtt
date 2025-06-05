@@ -41,7 +41,8 @@ func TestMqttConnectPublish(t *testing.T) {
 
 	cancel := make(chan bool)
 
-	go forwarder_thread(logger, config, cancel)
+	stats := NewStats(100) // 100 message window for rate calculation
+	go forwarder_thread(logger, config, stats, cancel)
 
 	defer func() {
 		//close forwarder thread
@@ -106,7 +107,8 @@ func TestMqttPublishAfterReconnect(t *testing.T) {
 
 	cancel := make(chan bool)
 
-	go forwarder_thread(logger, config, cancel)
+	stats := NewStats(100) // 100 message window for rate calculation
+	go forwarder_thread(logger, config, stats, cancel)
 
 	defer func() {
 		//close forwarder thread
@@ -187,7 +189,8 @@ func TestMqttPublishDuringReconnect(t *testing.T) {
 
 	cancel := make(chan bool)
 
-	go forwarder_thread(logger, config, cancel)
+	stats := NewStats(100) // 100 message window for rate calculation
+	go forwarder_thread(logger, config, stats, cancel)
 	defer func() {
 		//close forwarder thread
 		cancel <- true
@@ -270,7 +273,8 @@ func TestLatency(t *testing.T) {
 
 	cancel := make(chan bool)
 
-	go forwarder_thread(logger, config, cancel)
+	stats := NewStats(100) // 100 message window for rate calculation
+	go forwarder_thread(logger, config, stats, cancel)
 	defer func() {
 		//close forwarder thread
 		cancel <- true
@@ -341,6 +345,83 @@ func TestLatency(t *testing.T) {
 	fmt.Printf("Benchmark latency: %f, ms\n", duration_mqtt.Seconds()/float64(BENCHMARK_NUMBER_OF_MESSAGES)*1000)
 	fmt.Printf("ZMQ->MQTT latency: %f, ms\n", duration_zmq.Seconds()/float64(BENCHMARK_NUMBER_OF_MESSAGES)*1000)
 
+}
+
+func TestDashboardParameters(t *testing.T) {
+	ctr_id, err := initMqtt()
+	defer removeMqtt(ctr_id)
+
+	if !assert.NoError(t, err) {
+		assert.FailNowf(t, "Error in setup", "Error starting MQTT: %v", err)
+	}
+
+	logger, config, zmq_socket, err := setup()
+
+	if !assert.NoError(t, err) {
+		assert.FailNowf(t, "Error in setup: %v", "Setup completed", err)
+	}
+
+	cancel := make(chan bool)
+
+	stats := NewStats(100) // 100 message window for rate calculation
+	go forwarder_thread(logger, config, stats, cancel)
+
+	defer func() {
+		//close forwarder thread
+		cancel <- true
+	}()
+
+	// Test connection status
+	opts := mqtt.NewClientOptions().AddBroker(config.MqttServer).SetClientID("test client")
+	opts.SetKeepAlive(60 * time.Second)
+	opts.SetPingTimeout(10 * time.Second)
+	opts.SetMaxReconnectInterval(30 * time.Second)
+
+	client := mqtt.NewClient(opts)
+
+	if token := client.Connect(); token.Wait() && token.Error() != nil {
+		assert.FailNowf(t, "Error connecting to MQTT %v", "Setup completed", token.Error())
+	}
+
+	defer client.Disconnect(250)
+
+	// Wait for connection to be established
+	time.Sleep(2 * time.Second)
+
+	// Check connection status
+	statsData := stats.GetStats()
+	assert.True(t, statsData["mqtt_connected"].(bool), "MQTT should be connected")
+
+	// Test message counters
+	topic := "testtopic"
+	token := client.Subscribe(topic, 0, func(client mqtt.Client, msg mqtt.Message) {
+		fmt.Printf("Received message: %s from topic: %s\n", msg.Payload(), msg.Topic())
+	})
+	token.Wait()
+
+	// Publish message through zmq
+	zmq_socket.Send("testtopic test message", 0)
+
+	// Wait for message to be processed
+	time.Sleep(2 * time.Second)
+
+	// Check message counters
+	statsData = stats.GetStats()
+	assert.Equal(t, int64(1), statsData["messages_received"].(int64), "Messages received should be 1")
+	assert.Equal(t, int64(1), statsData["messages_forwarded"].(int64), "Messages forwarded should be 1")
+
+	// Test message rate
+	// Publish more messages to calculate rate
+	for i := 0; i < 10; i++ {
+		zmq_socket.Send("testtopic test message", 0)
+	}
+
+	// Wait for messages to be processed
+	time.Sleep(2 * time.Second)
+
+	// Check message rate
+	statsData = stats.GetStats()
+	assert.Greater(t, statsData["message_rate"].(float64), 0.0, "Message rate should be greater than 0")
 }
 
 func setup() (*zap.SugaredLogger, *Configuration, *zmq.Socket, error) {

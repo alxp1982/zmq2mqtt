@@ -62,7 +62,7 @@ func forwarder_thread(logger *zap.SugaredLogger, config *Configuration, stats *S
 
 	defer pipe.Close()
 
-	client := setupMQTTClient(logger, config)
+	client := setupMQTTClient(logger, config, stats)
 
 	defer client.Disconnect(200)
 
@@ -148,7 +148,7 @@ func setupZeroMQSocket(logger *zap.SugaredLogger) *zmq.Socket {
 	return pipe
 }
 
-func setupMQTTClient(logger *zap.SugaredLogger, config *Configuration) mqtt.Client {
+func setupMQTTClient(logger *zap.SugaredLogger, config *Configuration, stats *Stats) mqtt.Client {
 	opts := mqtt.NewClientOptions().AddBroker(config.MqttServer).SetClientID(config.MqttClientId)
 
 	opts.SetKeepAlive(time.Duration(config.MqttConfig.KeepAliveTimeout * int(time.Second)))
@@ -158,6 +158,7 @@ func setupMQTTClient(logger *zap.SugaredLogger, config *Configuration) mqtt.Clie
 
 	opts.SetConnectionLostHandler(func(c mqtt.Client, err error) {
 		logger.Warnf("!!!!!! mqtt connection lost error: %s\n", err.Error())
+		stats.UpdateConnectionStatus(true, false)
 	})
 
 	opts.SetReconnectingHandler(func(c mqtt.Client, options *mqtt.ClientOptions) {
@@ -166,6 +167,7 @@ func setupMQTTClient(logger *zap.SugaredLogger, config *Configuration) mqtt.Clie
 
 	opts.SetOnConnectHandler(func(c mqtt.Client) {
 		logger.Infoln("mqtt connected.....")
+		stats.UpdateConnectionStatus(true, true)
 	})
 
 	client := mqtt.NewClient(opts)
